@@ -2784,7 +2784,7 @@ def _define_module_for_target_variant_chipset(target, variant, chipset):
 
     deps = deps + select({
         ":wonder_enabled": [
-	    # Add dependency of wonder here
+            "//common-modules/wonder:wonder_headers",
         ],
         "//conditions:default": [],
     })
@@ -2839,7 +2839,10 @@ def _define_module_for_target_variant_chipset(target, variant, chipset):
         includes = ipaths + ["."],
         kconfig = kconfig,
         defconfig = defconfig,
-        local_defines = ["OPLUS_BUG_STABILITY"],
+        local_defines = ["OPLUS_BUG_STABILITY"] + select({
+            ":wonder_enabled": ["CONFIG_WONDER_SUPPORT=1"],
+            "//conditions:default": [],
+        }),
         conditional_srcs = combined_conditional_srcs,
         copts = copts,
         out = out,
