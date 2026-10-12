@@ -952,6 +952,16 @@ static void cnss_get_oplus_bdf_file_name(struct cnss_plat_data *plat_priv, char*
 	int region_nv_id = 0;
 	cnss_pr_info("region id: %d, wcn chip_id: 0x%02x\n", reg_id, plat_priv->chip_info.chip_id);
 
+	if (reg_id == REG_ID_IN) {
+	    plat_priv->region_name = REG_NAME_IN;
+	} else if (reg_id == REG_ID_EU) {
+	    plat_priv->region_name = REG_NAME_EU;
+	} else if (reg_id == REG_ID_US) {
+	    plat_priv->region_name = REG_NAME_US;
+	} else {
+	    plat_priv->region_name = REG_NAME_CN;
+	}
+
 	if (plat_priv->chip_info.chip_id & CHIP_ID_GF_MASK) {
 		if (is_prj_support_region_id()) {
 			if (reg_id == REG_ID_IN) {
@@ -968,11 +978,11 @@ static void cnss_get_oplus_bdf_file_name(struct cnss_plat_data *plat_priv, char*
 				plat_priv->region_name = REG_NAME_US;
 			} else {
 				snprintf(file_name, filename_len, ELF_BDF_FILE_NAME_GF);
+				plat_priv->bdf_name = ELF_BDF_FILE_NAME_GF;
 			}
 		} else {
 			snprintf(file_name, filename_len, ELF_BDF_FILE_NAME_GF);
 			plat_priv->bdf_name = ELF_BDF_FILE_NAME_GF;
-			plat_priv->region_name = REG_NAME_CN;
 		}
 	} else {
 		if (is_prj_support_region_id()) {
@@ -1006,7 +1016,6 @@ static void cnss_get_oplus_bdf_file_name(struct cnss_plat_data *plat_priv, char*
 		} else {
 			snprintf(file_name, filename_len, ELF_BDF_FILE_NAME);
 			plat_priv->bdf_name = ELF_BDF_FILE_NAME;
-			plat_priv->region_name = REG_NAME_CN;
 		}
 	}
 }
@@ -1037,7 +1046,7 @@ static int cnss_get_bdf_file_name(struct cnss_plat_data *plat_priv,
 	switch (bdf_type) {
 	case CNSS_BDF_ELF:
 		if (plat_priv->bdfname_dt[0] != 0) {
-			snprintf(filename_tmp, filename_len,
+			snprintf(filename_tmp, filename_len, "%s",
 				 plat_priv->bdfname_dt);
 			cnss_pr_dbg("filename_tmp:%s len:%d\n",
 				    filename_tmp, filename_len);
@@ -2366,6 +2375,15 @@ int cnss_wlfw_wlan_mode_send_sync(struct cnss_plat_data *plat_priv,
 	req->mode = (enum wlfw_driver_mode_enum_v01)mode;
 	req->hw_debug_valid = 1;
 	req->hw_debug = 0;
+
+	if (mode == CNSS_MISSION) {
+		req->wlan_on_time_usec_valid = 1;
+		req->wlan_on_time_usec = plat_priv->wlan_on_time_usec;
+		req->wlan_off_time_usec_valid = 1;
+		req->wlan_off_time_usec = plat_priv->wlan_off_time_usec;
+		cnss_pr_dbg("Populated wlan_on_time_usec: %llu, wlan_off_time_usec: %llu\n",
+			    req->wlan_on_time_usec, req->wlan_off_time_usec);
+	}
 
 	ret = qmi_txn_init(&plat_priv->qmi_wlfw, &txn,
 			   wlfw_wlan_mode_resp_msg_v01_ei, resp);

@@ -555,6 +555,9 @@ static int cam_isp_blob_path_exp_order_update(struct cam_ife_hw_mgr_ctx         
 	if (csid_update_valid) {
 		exp_info_update_args.num_process_exp = exp_order_update->num_process_exp;
 		exp_info_update_args.num_sensor_out_exp = exp_order_update->num_sensor_out_exp;
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+		exp_info_update_args.is_ipp_eof_enabled = ctx->flags.is_ipp_eof_enabled;
+#endif
 		for (i = 0; i < ctx->num_base; i++) {
 			if (ctx->base[i].hw_type != CAM_ISP_HW_TYPE_CSID)
 				continue;
@@ -3100,6 +3103,15 @@ static int cam_ife_hw_mgr_acquire_res_ife_out_pixel(
 					ife_out_res->comp_grp_id = vfe_acquire.vfe_out.comp_grp_id;
 
 				comp_grp = &ife_ctx->vfe_bus_comp_grp[ife_out_res->comp_grp_id];
+				if (comp_grp->num_res >= CAM_NUM_OUT_PER_COMP_IRQ_MAX) {
+					CAM_ERR(CAM_ISP,
+						"comp_grp num_res %u exceeds max %u, comp grp id:%d ctx:%u",
+						comp_grp->num_res, CAM_NUM_OUT_PER_COMP_IRQ_MAX,
+						ife_out_res->comp_grp_id, ife_ctx->ctx_index);
+					rc = -EINVAL;
+					goto err;
+				}
+
 				comp_grp->res_id[comp_grp->num_res] =
 					ife_out_res->hw_res[j]->res_id;
 
@@ -6570,6 +6582,9 @@ static int cam_ife_mgr_acquire_hw(void *hw_mgr_priv, void *acquire_hw_args)
 	ife_ctx->scratch_buf_info.ife_scratch_config = NULL;
 	ife_ctx->is_init_drv_cfg_received = false;
 	ife_ctx->flags.skip_reg_dump_buf_put = false;
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	ife_ctx->flags.is_ipp_eof_enabled = false;
+#endif
 	ife_ctx->wr_per_req_index = 0;
 	memset(ife_ctx->per_req_info, 0, sizeof(ife_ctx->per_req_info));
 
@@ -8773,6 +8788,9 @@ end:
 			cam_mem_put_cpu_buf(ctx->reg_dump_buf_desc[i].mem_handle);
 		ctx->num_reg_dump_buf = 0;
 	}
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	ctx->flags.is_ipp_eof_enabled = false;
+#endif
 	ctx->flags.skip_reg_dump_buf_put = false;
 	ctx->flags.dump_on_error = false;
 	ctx->flags.dump_on_flush = false;
@@ -12699,6 +12717,7 @@ static void cam_isp_copy_fcg_config(
 static int cam_isp_blob_fcg_config_prepare(
 	struct cam_isp_generic_fcg_config     *fcg_config_args,
 	struct cam_hw_prepare_update_args     *prepare,
+	uint32_t                               blob_size,
 	enum cam_isp_hw_type                   hw_type)
 {
 	struct cam_ife_hw_mgr_ctx             *ctx = NULL;
@@ -12738,6 +12757,13 @@ static int cam_isp_blob_fcg_config_prepare(
 	fcg_size += fcg_config_args->num_ch_ctx *
 		(fcg_config_args->num_predictions - 1) *
 		sizeof(struct cam_isp_predict_fcg_config);
+
+	if (fcg_size > blob_size) {
+		CAM_ERR(CAM_ISP,
+			"%s: FCG config size %u exceeds blob size %u, ctx_idx: %u, request_id: %llu",
+			__func__, fcg_size, blob_size, ctx->ctx_index, request_id);
+		return -EINVAL;
+	}
 
 	if (fcg_size != fcg_config_args->size) {
 		CAM_ERR(CAM_ISP,
@@ -13624,7 +13650,7 @@ static int cam_isp_packet_generic_blob_handler(void *user_data,
 		}
 
 		rc = cam_isp_blob_fcg_config_prepare(fcg_config_args,
-			prepare, CAM_ISP_HW_TYPE_VFE);
+			prepare, blob_size, CAM_ISP_HW_TYPE_VFE);
 		if (rc)
 			CAM_ERR(CAM_ISP,
 				"FCG configuration preparation failed, rc: %d, ctx_idx: %d",
@@ -14549,7 +14575,7 @@ static int cam_sfe_packet_generic_blob_handler(void *user_data,
 		}
 
 		rc = cam_isp_blob_fcg_config_prepare(fcg_config_args,
-			prepare, CAM_ISP_HW_TYPE_SFE);
+			prepare, blob_size, CAM_ISP_HW_TYPE_SFE);
 		if (rc)
 			CAM_ERR(CAM_ISP,
 				"FCG configuration preparation failed, rc: %d, ctx_idx: %d",
@@ -15927,6 +15953,13 @@ static inline int cam_ife_mgr_eof_irq_enable(
 				CAM_DBG(CAM_ISP,
 					"Failed to %s CSID[%u] EOF IRQ rc: %d",
 					(eof_irq_enable) ? "enable" : "disable", hw_idx, rc);
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+			else {
+				ctx->flags.is_ipp_eof_enabled = eof_irq_enable;
+				CAM_INFO(CAM_ISP, "upgrade eof result[%d]", ctx->flags.is_ipp_eof_enabled);
+			}
+#endif
+
 			break;
 		}
 	}

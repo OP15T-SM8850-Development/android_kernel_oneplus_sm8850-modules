@@ -31,6 +31,7 @@ enum oplus_temp_region {
 	TEMP_REGION_LITTLE_COOL,
 	TEMP_REGION_PRE_NORMAL,
 	TEMP_REGION_NORMAL,
+	TEMP_REGION_NORMAL_MID,
 	TEMP_REGION_NORMAL_HIGH,
 	TEMP_REGION_WARM,
 	TEMP_REGION_HOT,
@@ -39,6 +40,8 @@ enum oplus_temp_region {
 
 #define V3P6_TEMP_REGION_MAX 8
 #define V3P7_TEMP_REGION_MAX 9
+#define V3P7_1_TEMP_REGION_MAX 10
+
 
 enum power_role_type {
 	POWER_ROLE_UNKNOWN = -1,
@@ -200,6 +203,7 @@ int oplus_comm_get_dis_ui_power_state(struct oplus_mms *topic);
 int oplus_comm_get_removed_bat_decidegc(struct oplus_mms *topic);
 void oplus_comm_set_dec_delta(struct oplus_mms *topic, int val);
 void oplus_comm_get_dec_delta(struct oplus_mms *topic, int *val);
+void oplus_comm_notify_ai_cv_changed(struct oplus_mms *topic);
 bool oplus_comm_get_hmac_not_pop_up(struct oplus_mms *topic);
 int oplus_comm_get_bdd_voltdiff_trend(struct oplus_mms *topic);
 #endif /* __OPLUS_CHG_COMM_H__ */

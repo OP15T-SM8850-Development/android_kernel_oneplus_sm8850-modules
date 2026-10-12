@@ -16,6 +16,7 @@
 #include <linux/syscalls.h>
 #include <linux/version.h>
 #include <linux/regulator/consumer.h>
+#include <linux/slab.h>
 
 #include "touchpanel_common.h"
 #include "touchpanel_prevention/touchpanel_prevention.h"
@@ -25,7 +26,8 @@
 
 #ifndef CONFIG_REMOVE_OPLUS_FUNCTION
 #ifdef CONFIG_TOUCHPANEL_MTK_PLATFORM
-#include<mt-plat/mtk_boot_common.h>
+#include <mt-plat/mtk_boot_common.h>
+#elif defined(CONFIG_TOUCHPANEL_UNISOC_PLATFORM)
 #else
 #include <soc/oplus/system/boot_mode.h>
 #endif
@@ -816,12 +818,8 @@ DECLARE_PROC_OPS(tp_communicate_test_ops, simple_open, tp_communicate_test_read,
 
 /*double_tap_enable - For black screen gesture
  * Input:
- * gesture_enable = 0 : disable gesture
- * gesture_enable = 1 : enable gesture when ps is far away
- * gesture_enable = 2 : disable gesture when ps is near
- * gesture_enable = 3 : enable single tap gesture when ps is far away
- * value = 5 : hall status is far way
- * value = 6 : hall status is near
+ * gesture_enable = 0 : disable dt2w
+ * gesture_enable = 1 : enable dt2w
  */
 static ssize_t proc_gesture_control_write(struct file *file,
 		const char __user *buffer, size_t count, loff_t *ppos)
@@ -847,64 +845,13 @@ static ssize_t proc_gesture_control_write(struct file *file,
 
 	mutex_lock(&ts->mutex);
 
-	switch(value) {
-	case 0:
-	case 1:
-	case 2:
-	case 3:
-		if (ts->gesture_enable != value) {
-			ts->gesture_enable = value;
-			TP_INFO(ts->tp_index, "%s: gesture_enable = %d, is_suspended = %d\n", __func__,
-				ts->gesture_enable, ts->is_suspended);
+	if (value)
+		ts->gesture_enable_indep |= (1 << DOU_TAP);
+	else
+		ts->gesture_enable_indep &= ~(1 << DOU_TAP);
 
-		if (0 == ts->gesture_enable && ts->is_suspended && ts->fp_grip_enable && ts->fp_grip_hold == true && ts->fp_grip_support) {
-			TP_INFO(ts->tp_index, "%s: maybe prox near to disable gesture,nead send release touch to fp\n", __func__);
-			touch_call_fp_grip(ts, 0);
-		}
-
-		if (ts->is_incell_panel && (ts->suspend_state == TP_RESUME_EARLY_EVENT
-					    || ts->disable_gesture_ctrl) && (ts->tp_resume_order == LCD_TP_RESUME)) {
-			TS_TP_INFO("tp will resume, no need mode_switch in incell panel\n"); /*avoid i2c error or tp rst pulled down in lcd resume*/
-
-		} else if (ts->is_suspended) {
-			if (ts->bus_ready == false) {
-				if (ts->health_monitor_support) {
-					ts->monitor_data.bus_not_ready_gesture_write_count++;
-				}
-			}
-			if (ts->fingerprint_underscreen_support && ts->fp_enable
-					&& ts->ts_ops->enable_gesture_mask) {
-				ts->ts_ops->enable_gesture_mask(ts->chip_data,
-								(ts->gesture_enable & 0x01) == 1);
-
-			} else {
-				operate_mode_switch(ts);
-			}
-		}
-
-	}
-	break;
-	case 4:
-	break;
-	case 5:
-		ts->hall_status = false;
-		if (ts->ts_ops->notify_keyboard_open && ts->is_hall_near_resume) {
-			ts->ts_ops->notify_keyboard_open(ts->chip_data);
-			ts->is_hall_near_resume = false;
-			if (ts->health_monitor_support) {
-				tp_healthinfo_report(&ts->monitor_data, HEALTH_REPORT, "hall_near_resume");
-			}
-		}
-		break;
-	case 6:
-		ts->hall_status = true;
-		if ((ts->gesture_enable & 0x01) && ts->is_suspended)
-			operate_mode_switch(ts);
-		break;
-	default:
-		TPD_DEBUG("invalid setting %d\n", value);
-	}
-	TPD_INFO("%s: gesture_enable = %d, value = %d, hall_status = %d\n", __func__, ts->gesture_enable, value, ts->hall_status);
+	if (ts->ts_ops->set_gesture_state)
+		ts->ts_ops->set_gesture_state(ts->chip_data, ts->gesture_enable_indep);
 
 	mutex_unlock(&ts->mutex);
 
@@ -913,14 +860,14 @@ static ssize_t proc_gesture_control_write(struct file *file,
 
 /*double_tap_enable - For black screen gesture
  * Output:
- * gesture_enable = 0 : disable gesture
- * gesture_enable = 1 : enable gesture when ps is far away
- * gesture_enable = 2 : disable gesture when ps is near
+ * gesture_enable = 0 : disable dt2w
+ * gesture_enable = 1 : enable dt2w
  */
 static ssize_t proc_gesture_control_read(struct file *file, char __user *buffer,
 		size_t count, loff_t *ppos)
 {
 	int ret = 0;
+	int value = 0;
 	char page[PAGESIZE] = {0};
 	struct touchpanel_data *ts = PDE_DATA(file_inode(file));
 
@@ -928,8 +875,10 @@ static ssize_t proc_gesture_control_read(struct file *file, char __user *buffer,
 		return 0;
 	}
 
-	TP_DEBUG(ts->tp_index, "double tap enable is: %d\n", ts->gesture_enable);
-	ret = snprintf(page, PAGESIZE - 1, "%d\n", ts->gesture_enable);
+	value = !!(ts->gesture_enable_indep & (1 << DOU_TAP));
+
+	TP_DEBUG(ts->tp_index, "double tap enable is: %d\n", value);
+	ret = snprintf(page, PAGESIZE - 1, "%d\n", value);
 	ret = simple_read_from_buffer(buffer, count, ppos, page, strlen(page));
 
 	return ret;
@@ -1784,7 +1733,7 @@ static ssize_t proc_fw_update_write(struct file *file,
 	}
 	touchpanel_trusted_touch_completion(ts);
 
-#ifndef CONFIG_REMOVE_OPLUS_FUNCTION
+#if !(defined(CONFIG_REMOVE_OPLUS_FUNCTION) || defined(CONFIG_TOUCHPANEL_UNISOC_PLATFORM))
 #ifdef CONFIG_TOUCHPANEL_MTK_PLATFORM
 
 	if (ts->boot_mode == KERNEL_POWER_OFF_CHARGING_BOOT)
@@ -3086,6 +3035,9 @@ static ssize_t proc_click_sensitive_level_write(struct file *file, const char __
 		ts->ts_ops->click_sensitive_lv_set(ts->chip_data, raw_level);
 	} else {
 		TS_TP_INFO("%s: TP is_suspended.\n", __func__);
+		TS_TP_INFO("ClickSensitiveLevel:%u, value:%u\n",
+			ts->click_sensitive_level_chosen,
+			ts->click_sensitive_level_array[ts->click_sensitive_level_chosen]);
 	}
 	mutex_unlock(&ts->mutex);
 
@@ -3320,8 +3272,19 @@ static void touch_scen_config_write(struct touchpanel_data *ts, char *input, int
 		mutex_unlock(&ts->mutex);
 		break;
 	case SET_PACKAGE_TYPE:
+		TPD_INFO("set_package_type:%u set value:%d.\n", scene_info->set_package_type, value);
+		if (value == scene_info->set_package_type) {
+			break;
+		}
+		mutex_lock(&ts->mutex);
 		scene_info->set_package_type = value;
-		TPD_INFO("set_package_type is %d\n", scene_info->set_package_type);
+		TS_TP_INFO("%s: set_package_type set:%d.\n", __func__, value);
+		if (!ts->is_suspended && ts->ts_ops->set_package_type && ts->tp_scene_para_switch_support) {
+			ts->ts_ops->set_package_type(ts->chip_data, value);
+		} else {
+			TS_TP_INFO("%s: TP is_suspended.\n", __func__);
+		}
+		mutex_unlock(&ts->mutex);
 		break;
 	case PEN_SENSITIVE_LEVEL:
 		TPD_INFO("pen_sensitive_level:%u set value:%d.\n", scene_info->pen_sensitive_level, value);
@@ -4902,6 +4865,8 @@ static ssize_t tp_data_record_write_func(struct file *file,
 
 	TPD_DETAIL("%s tp_limit_data write :%d\n", __func__, value);
 
+	ts->tp_data_record_enable = !!value;
+
 	if (ts->int_mode == BANNABLE) {
 		disable_irq_nosync(ts->irq);
 	}
@@ -4932,6 +4897,11 @@ static int tp_data_record_read_func(struct seq_file *s, void *v)
 	if (!ts) {
 		return 0;
 	}
+
+	if (ts->tp_data_record_support) {
+		seq_printf(s, "%d\n", ts->tp_data_record_enable);
+	}
+
 	return 0;
 }
 
@@ -5000,7 +4970,7 @@ static int abs_doze_open(struct inode *inode, struct file *file)
 
 DECLARE_PROC_OPS(tp_abs_doze_proc_fops, abs_doze_open, seq_read, NULL, single_release);
 
-/*proc/touchpanel/debug_info/ic_reset*/
+/*proc/touchpanel/debug_info/wdt_reset*/
 static ssize_t tp_inject_wdt_reset_write_func(struct file *file,
 				    const char __user *buffer, size_t count, loff_t *ppos)
 {
@@ -5862,6 +5832,7 @@ static int init_debug_info_proc(struct touchpanel_data *ts)
 
 	return ret;
 }
+
 static int init_debug_info_proc_part2(struct touchpanel_data *ts, struct proc_dir_entry *prEntry_debug_tp)
 {
 	int ret = 0;
@@ -6044,10 +6015,10 @@ int init_touchpanel_proc_part3(struct touchpanel_data *ts, struct proc_dir_entry
 			"glove_mode_enable", 0666, NULL, &proc_glove_mode, ts, false,
 			ts->glove_mode_v2_support
 		},
-		{"set_idle_freq_mode", 0666, NULL, &proc_set_idle_freq_mode_ops, ts, false, ts->idle_freq_support},
 		{
 			"rainstorm_mode", 0666, NULL, &proc_rainstorm_mode, ts, false, ts->rainstorm_mode_v2_support
 		},
+		{"set_idle_freq_mode", 0666, NULL, &proc_set_idle_freq_mode_ops, ts, false, ts->idle_freq_support},
 		{
 			"pocket_prevent_mode", 0666, NULL, &proc_pocket_prevent_mode, ts, false, ts->glove_mode_v2_support
 		},
@@ -6101,7 +6072,9 @@ int init_touchpanel_proc(struct touchpanel_data *ts)
 	int ret = 0;
 	int i = 0;
 	struct proc_dir_entry *prEntry_tmp = NULL;
-	char name[TP_NAME_SIZE_MAX];
+#ifndef CONFIG_REMOVE_OPLUS_FUNCTION
+	char *name = NULL;
+#endif
 
 	tp_proc_node tp_proc_node[] = {
 		{
@@ -6178,6 +6151,13 @@ int init_touchpanel_proc(struct touchpanel_data *ts)
 	/*proc files-step1:/proc/devinfo/tp  (touchpanel device info)*/
 #ifndef CONFIG_REMOVE_OPLUS_FUNCTION
 
+	name = kmalloc(TP_NAME_SIZE_MAX, GFP_KERNEL);
+	if (!name) {
+		ret = -ENOMEM;
+		TP_INFO(ts->tp_index, "%s: Failed to allocate name buffer\n", __func__);
+		return ret;
+	}
+
 	if (ts->tp_index == 0) {
 		snprintf(name, TP_NAME_SIZE_MAX, "%s", "tp");
 
@@ -6196,6 +6176,9 @@ int init_touchpanel_proc(struct touchpanel_data *ts)
 			pr_err("register_manufacture_devinfo fail\n");
 		}
 	}
+
+	kfree(name);
+	name = NULL;
 
 #endif
 

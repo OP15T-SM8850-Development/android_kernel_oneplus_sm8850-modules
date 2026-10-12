@@ -5,7 +5,6 @@
 #include <oplus_chg.h>
 
 #define GAUGE_INVALID_TEMP	(-400)
-#define OPLUS_BATTERY_TYPE_LEN 16
 
 enum gauge_topic_item {
 	GAUGE_ITEM_SOC,
@@ -47,6 +46,7 @@ enum gauge_topic_item {
 	GAUGE_ITEM_GAUGE_R_INFO,
 	GAUGE_ITEM_SOC_CENTI,
 	GAUGE_ITEM_VOL_FCL,
+	GAUGE_ITEM_C_SOC,
 };
 
 enum gauge_type_id {
@@ -190,7 +190,6 @@ int oplus_gauge_get_battery_cb_status(void);
 int oplus_gauge_get_i2c_err(void);
 void oplus_gauge_clear_i2c_err(void);
 int oplus_gauge_get_passedchg(int *val);
-int oplus_gauge_dump_register(void);
 int oplus_gauge_lock(void);
 int oplus_gauge_unlock(void);
 bool oplus_gauge_is_locked(void);
@@ -223,9 +222,6 @@ void oplus_gauge_set_deep_count_cali(struct oplus_mms *topic, int val);
 int oplus_gauge_get_deep_count_cali(struct oplus_mms *topic);
 void oplus_gauge_set_deep_dischg_ratio_thr(struct oplus_mms *topic, int ratio);
 int oplus_gauge_get_deep_dischg_ratio_thr(struct oplus_mms *topic);
-int oplus_gauge_get_battery_type_str(char *type);
-struct device_node *oplus_get_node_by_type(struct device_node *father_node);
-struct device_node *oplus_get_node_by_child_gauge(struct device_node *father_node);
 int oplus_gauge_get_battinfo_sn(struct oplus_mms *topic, char *sn_buff, int size_buffer);
 int oplus_gauge_get_sili_alg_application_info(struct oplus_mms *topic, u8 *info, int len);
 int oplus_gauge_get_sili_alg_lifetime_info(struct oplus_mms *mms, u8 *info, int len);
@@ -271,5 +267,7 @@ int oplus_gauge_get_nvram_stress_test(struct oplus_mms *topic,
 int oplus_gauge_start_term_volt_stress_test(struct oplus_mms *topic,
 		int input_count, int interval_ms);
 int oplus_gauge_get_three_level_term_volt(struct oplus_mms *topic, int term_volt[]);
+void oplus_gauge_set_dcb_protect_status(struct oplus_mms *topic, int val);
+int oplus_gauge_get_dcb_protect_status(struct oplus_mms *topic, int *status, int *reason);
 
 #endif /* __OPLUS_MMS_GAUGE_H__ */

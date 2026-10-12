@@ -9,6 +9,7 @@
 #include <linux/slab.h>
 #include <linux/device.h>
 #include <linux/fs.h>
+#include <linux/sysfs.h>
 #include <linux/nls.h>
 #include <linux/kdev_t.h>
 #include <linux/random.h>
@@ -40,11 +41,13 @@
 #include <linux/mutex.h>
 #include <oplus_sec.h>
 #include <oplus_reverse_chg.h>
+
+#include <oplus_chg_ai_cv.h>
+
 #ifndef CONFIG_DISABLE_OPLUS_FUNCTION
 #include <soc/oplus/system/oplus_project.h>
 #endif
 #include <recovery/state_keep.h>
-#include <oplus_chg_dual_cells_protection.h>
 
 struct oplus_sec_ic_test_res {
 	struct completion ack;
@@ -78,7 +81,6 @@ struct oplus_configfs_device {
 	struct oplus_mms *cpa_topic;
 	struct oplus_mms *reverse_topic;
 	struct oplus_mms *batt_bal_topic;
-	struct oplus_mms *protection_topic;
 	struct oplus_mms *retention_topic;
 	struct oplus_mms *plc_topic;
 	struct oplus_mms *keep_topic;
@@ -173,7 +175,6 @@ struct oplus_configfs_device {
 	int eis_current;
 	int plc_status;
 	bool plc_user_enable;
-	bool batt_health;
 	int boost_ic_type;
 	int boost_dev_id;
 	int boost_cv;
@@ -743,6 +744,28 @@ static ssize_t battery_fcc_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(battery_fcc);
 
+#define BATT_QMAX_LEN 10
+static ssize_t battery_qmax_show(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	struct oplus_configfs_device *chip = dev->driver_data;
+	int qmax = 0;
+	int rc;
+
+	if (!chip->gauge_topic) {
+		chg_err("battery_qmax_show: gauge_topic is NULL\n");
+		return snprintf(buf, BATT_QMAX_LEN, "%d\n", 0);
+	}
+
+	rc = oplus_gauge_get_qmax(chip->gauge_topic, 0, &qmax);
+	if (rc < 0) {
+		chg_err("battery_qmax_show: get qmax[0] error, rc=%d\n", rc);
+		return snprintf(buf, BATT_QMAX_LEN, "%d\n", 0);
+	}
+	return snprintf(buf, BATT_QMAX_LEN, "%d\n", qmax);
+}
+static DEVICE_ATTR_RO(battery_qmax);
+
 #define BATT_RM_LEN 10
 static ssize_t battery_rm_show(struct device *dev,
 			       struct device_attribute *attr, char *buf)
@@ -1155,6 +1178,7 @@ static ssize_t battery_ui_soh_show(struct device *dev, struct device_attribute *
 	else
 		len = sprintf(buf, "%d\n", ui_soh);
 
+	chg_info("battery_ui_soh_show:%s\n", buf);
 	return len;
 }
 
@@ -1171,6 +1195,7 @@ static ssize_t  battery_ui_soh_store(struct device *dev,
 		return -EINVAL;
 	}
 
+	chg_info("battery_ui_soh_store:%d\n", ui_soh);
 	ret = oplus_gauge_set_ui_soh(chip->gauge_topic, ui_soh);
 	if (ret < 0)
 		chg_err("set battery ui soh error");
@@ -2627,51 +2652,6 @@ static ssize_t gauge_car_c_show(
 }
 static DEVICE_ATTR_RO(gauge_car_c);
 
-static ssize_t dual_cells_batt_health_show(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	int health_status;
-	int health_reason;
-	int ret;
-	struct oplus_configfs_device *chip = dev->driver_data;
-	if (!chip) {
-		chg_err("chip is NULL\n");
-		return -EINVAL;
-	}
-
-	ret = oplus_chg_get_dual_cells_batt_health(
-			chip->protection_topic, &health_status, &health_reason);
-	if (ret < 0)
-		return sprintf(buf, "unsupport");
-
-	chip->batt_health = health_status;
-	return sprintf(buf, "%d,%d\n", health_reason, health_status);
-}
-
-static ssize_t dual_cells_batt_health_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-	struct oplus_configfs_device *chip = dev->driver_data;
-	int val = 0;
-
-	if (!chip) {
-		chg_err("chip is NULL\n");
-		return -EINVAL;
-	}
-	if (!buf) {
-		chg_err("buf is NULL\n");
-		return -EINVAL;
-	}
-
-	if (kstrtos32(buf, 0, &val)) {
-		chg_err("buf error\n");
-		return -EINVAL;
-	}
-
-	oplus_chg_set_dual_cells_batt_health(chip->protection_topic, val);
-
-	return count;
-}
-static DEVICE_ATTR_RW(dual_cells_batt_health);
-
 static ssize_t chg_path_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	int val = 0;
@@ -2812,10 +2792,122 @@ static ssize_t get_three_level_term_volt_show(
 }
 DEVICE_ATTR_RO(get_three_level_term_volt);
 
+static ssize_t ai_cv_curve_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	return oplus_ai_cv_curve_format(buf, PAGE_SIZE);
+}
+
+#define AI_CV_CURVE_STORE_MAX	512
+
+static ssize_t ai_cv_curve_store(struct device *dev,
+				 struct device_attribute *attr,
+				 const char *buf, size_t count)
+{
+	char kbuf[AI_CV_CURVE_STORE_MAX];
+	size_t copy_len;
+	int rc;
+
+	if (!buf || count == 0)
+		return -EINVAL;
+	if (count >= sizeof(kbuf)) {
+		chg_err("ai_cv_curve input too large: %zu (max %zu)\n",
+			count, sizeof(kbuf) - 1);
+		return -EINVAL;
+	}
+
+	/*
+	 * Defense-in-depth: the bound check above already guarantees count
+	 * fits with room for the trailing NUL, but threading the bound
+	 * through the memcpy length keeps it provably safe even if the
+	 * pre-check is ever loosened, and makes the bound obvious to static
+	 * scanners that don't follow the earlier return-on-oversize branch.
+	 */
+	copy_len = min(count, sizeof(kbuf) - 1);
+	memcpy(kbuf, buf, copy_len);
+	kbuf[copy_len] = 0;
+
+	rc = oplus_ai_cv_curve_parse_set(kbuf, copy_len);
+	return rc < 0 ? rc : (ssize_t)count;
+}
+static DEVICE_ATTR_RW(ai_cv_curve);
+
+static ssize_t ai_cv_fc_thresh_show(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%d\n", oplus_ai_cv_get_fc_thresh_mv());
+}
+
+static ssize_t ai_cv_fc_thresh_store(struct device *dev,
+				     struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	int val = 0;
+	int rc;
+
+	rc = kstrtos32(buf, 0, &val);
+	if (rc < 0) {
+		chg_err("invalid buf: %s\n", buf);
+		return rc;
+	}
+	rc = oplus_ai_cv_set_fc_thresh_mv(val);
+	if (rc < 0)
+		return rc;
+	return count;
+}
+static DEVICE_ATTR_RW(ai_cv_fc_thresh);
+
+static ssize_t dual_cells_batt_health_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	int health_status;
+	int health_reason;
+	int ret;
+	struct oplus_configfs_device *chip = dev->driver_data;
+	if (!chip) {
+		chg_err("chip is NULL\n");
+		return -EINVAL;
+	}
+
+	ret = oplus_gauge_get_dcb_protect_status(
+		chip->gauge_topic, &health_status, &health_reason);
+	if (ret < 0)
+		return sprintf(buf, "unsupport");
+
+	return sprintf(buf, "%d,%d\n", health_reason, health_status);
+}
+
+static ssize_t dual_cells_batt_health_store(struct device *dev, struct device_attribute *attr,
+		 const char *buf, size_t count)
+{
+	struct oplus_configfs_device *chip = dev->driver_data;
+	int val = 0;
+
+	if (!chip) {
+		chg_err("chip is NULL\n");
+		return -EINVAL;
+	}
+	if (!buf) {
+		chg_err("buf is NULL\n");
+		return -EINVAL;
+	}
+
+	if (kstrtos32(buf, 0, &val)) {
+		chg_err("buf error\n");
+		return -EINVAL;
+	}
+
+	oplus_gauge_set_dcb_protect_status(chip->gauge_topic, val);
+
+	return count;
+}
+static DEVICE_ATTR_RW(dual_cells_batt_health);
+
 static struct device_attribute *oplus_battery_attributes[] = {
 	&dev_attr_authenticate,
 	&dev_attr_battery_cc,
 	&dev_attr_battery_fcc,
+	&dev_attr_battery_qmax,
 	&dev_attr_battery_rm,
 	&dev_attr_battery_soh,
 #ifdef CONFIG_OPLUS_CALL_MODE_SUPPORT
@@ -2899,6 +2991,8 @@ static struct device_attribute *oplus_battery_attributes[] = {
 	&dev_attr_gauge_nvram_stress_test,
 	&dev_attr_get_three_level_term_volt,
 	&dev_attr_dual_cells_batt_health,
+	&dev_attr_ai_cv_curve,
+	&dev_attr_ai_cv_fc_thresh,
 	NULL
 };
 
@@ -3231,6 +3325,32 @@ static ssize_t ping_time_show(struct device *dev, struct device_attribute *attr,
 }
 static DEVICE_ATTR_RO(ping_time);
 
+static ssize_t wls_debug_info_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	int rc;
+	ssize_t count = 0;
+	union mms_msg_data data = { 0 };
+	struct oplus_configfs_device *chip = dev->driver_data;
+
+	if (!chip) {
+		chg_err("chip is NULL\n");
+		return -EINVAL;
+	}
+
+	if (chip->wls_topic) {
+		rc = oplus_mms_get_item_data(
+			chip->wls_topic, WLS_ITEM_DEBUG_INFO, &data, true);
+		if (!rc && data.strval && strlen(data.strval)) {
+			data.strval[OPLUS_CHG_DEBUG_INFO_LEN - 1] = 0;
+			count = snprintf(buf, min(OPLUS_CHG_DEBUG_INFO_LEN, (int)PAGE_SIZE), "%s\n", data.strval);
+		}
+	}
+
+
+	return count;
+}
+static DEVICE_ATTR_RO(wls_debug_info);
+
 #ifdef WLS_QI_DEBUG
 ssize_t __attribute__((weak))
 oplus_chg_wls_upgrade_fw_show(struct oplus_mms *mms, char *buf)
@@ -3288,6 +3408,7 @@ static struct device_attribute *oplus_wireless_attributes[] = {
 	&dev_attr_wlspen_soc,
 	&dev_attr_wlspen_dischg_soc,
 	&dev_attr_ping_time,
+	&dev_attr_wls_debug_info,
 #ifdef WLS_QI_DEBUG
 	&dev_attr_upgrade_firmware,
 #endif
@@ -5902,19 +6023,6 @@ static void oplus_configfs_subscribe_retention_topic(struct oplus_mms *topic,
 		chip->retention_state = !!data.intval;
 }
 
-static void oplus_configfs_subscribe_protection_topic(struct oplus_mms *topic,
-					     void *prv_data)
-{
-	struct oplus_configfs_device *chip = prv_data;
-	union mms_msg_data data = { 0 };
-	int rc;
-
-	chip->protection_topic = topic;
-	rc = oplus_mms_get_item_data(chip->protection_topic, DUAL_CELLS_BATT_STATUS, &data, true);
-	if (rc >= 0)
-		chip->batt_health = !!data.intval;
-}
-
 static void oplus_configfs_plc_subs_callback(struct mms_subscribe *subs,
 					      enum mms_msg_type type, u32 id, bool sync)
 {
@@ -6152,7 +6260,6 @@ static __init int oplus_configfs_init(void)
 #if IS_ENABLED(CONFIG_OPLUS_CHG_STATE_KEEP)
 	oplus_mms_wait_topic("state_keep", oplus_configfs_subscribe_keep_topic, chip);
 #endif
-	oplus_mms_wait_topic("protection", oplus_configfs_subscribe_protection_topic, chip);
 
 	return 0;
 
